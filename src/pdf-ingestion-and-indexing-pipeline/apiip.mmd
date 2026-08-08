@@ -1,0 +1,32 @@
+flowchart TD
+    classDef startEnd fill:#424242,stroke:#212121,stroke-width:2px,color:#ffffff;
+    classDef process fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#0d47a1;
+    classDef decision fill:#fff9c4,stroke:#fbc02d,stroke-width:2px,color:#f57f17;
+    classDef external fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#4a148c;
+
+    Start(["Upload Request: POST /index"]):::startEnd
+    Multer["Multer Middleware:\nValidates mimetype (application/pdf)\nStores in /uploads with unique UUID filename"]:::process
+    EnqueueIndex["Enqueue job to BullMQ 'file-indexing'\nReturns 202 Accepted { jobId }"]:::process
+    WorkerPickup["Indexing Worker picks up job from Queue"]:::process
+    EnsureColl["ensureCollection():\nCheck if Qdrant collection exists\nCreate with size=1536, distance=Cosine if missing"]:::process
+    ReadPDF["readPdfText():\nRead file buffer via fs\nParse text with pdf-parse"]:::process
+    Chunking["chunkText():\nClean whitespace\nSliding window (~1000 chars, 200 overlap)\nBreak on space boundaries"]:::process
+    HasText{"Extractable Chunks > 0?"}:::decision
+    EmptyErr["Return { chunks: 0, message: 'No extractable text' }"]:::process
+    BatchEmbed["embedTexts():\nBatch chunks into groups of 100\nRequest OpenAI text-embedding-3-small"]:::external
+    PreparePoints["Construct Qdrant Points:\n- Point ID: UUID\n- Vector: 1536-dim array\n- Payload: { text, source, filePath, chunkIndex }"]:::process
+    UpsertQdrant["qdrant.upsert():\nUpsert points into collection\nWait for completion signal"]:::external
+    Finish(["Indexing Complete\nJob marked 'completed' in BullMQ"]):::startEnd
+
+    Start --> Multer
+    Multer --> EnqueueIndex
+    EnqueueIndex --> WorkerPickup
+    WorkerPickup --> EnsureColl
+    EnsureColl --> ReadPDF
+    ReadPDF --> Chunking
+    Chunking --> HasText
+    HasText -- "No" --> EmptyErr
+    HasText -- "Yes" --> BatchEmbed
+    BatchEmbed --> PreparePoints
+    PreparePoints --> UpsertQdrant
+    UpsertQdrant --> Finish

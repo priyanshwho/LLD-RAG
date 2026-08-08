@@ -1,0 +1,64 @@
+flowchart TB
+    %% Styling Classes
+    classDef client fill:#e1f5fe,stroke:#0288d1,stroke-width:2px,color:#01579b;
+    classDef api fill:#fff3e0,stroke:#f57c00,stroke-width:2px,color:#e65100;
+    classDef queue fill:#ede7f6,stroke:#7b1fa2,stroke-width:2px,color:#4a148c;
+    classDef worker fill:#e8f5e9,stroke:#388e3c,stroke-width:2px,color:#1b5e20;
+    classDef engine fill:#fce4ec,stroke:#c2185b,stroke-width:2px,color:#880e4f;
+    classDef db fill:#e0f2f1,stroke:#00796b,stroke-width:2px,color:#004d40;
+    classDef external fill:#f3e5f5,stroke:#8e24aa,stroke-width:2px,color:#4a148c;
+
+    subgraph CLIENT_LAYER ["Client Layer"]
+        User["Client / HTTP Requestor"]:::client
+    end
+
+    subgraph API_GATEWAY ["Express API Layer (src/index.js)"]
+        POST_Index["POST /index\n(Multer PDF Upload)"]:::api
+        POST_Query["POST /query\n(JSON Query Payload)"]:::api
+        GET_Poll["GET /query/:id\n(Job Status & Result Polling)"]:::api
+    end
+
+    subgraph QUEUE_LAYER ["Distributed Queue Layer (src/queue.js + Redis)"]
+        IndexingQueue[("BullMQ: file-indexing Queue\n(Concurrency: 2)")]:::queue
+        QueryQueue[("BullMQ: query Queue\n(Concurrency: 4)")]:::queue
+    end
+
+    subgraph WORKER_LAYER ["Background Worker Service (src/worker.js)"]
+        IndexingWorker["Indexing Worker\n(indexPdf Task)"]:::worker
+        QueryWorker["Query Worker\n(answerQuery Task)"]:::worker
+    end
+
+    subgraph CORE_MODULES ["Core Processing Modules"]
+        IndexerEngine["Indexing Engine\n(src/indexer.js)"]:::engine
+        RetrieverEngine["Retrieval & RAG Engine\n(src/retriever.js)"]:::engine
+    end
+
+    subgraph DATA_STORAGE ["Storage & External Services"]
+        UploadDir[("Local Disk\n/uploads")]:::db
+        QdrantDB[("Qdrant Vector DB\nCollection: 'documents'\n(1536 Cosine Vector)")]:::db
+        OpenAI_API["OpenAI API Service\n(Embeddings & gpt-4o-mini)"]:::external
+    end
+
+    %% Interactions
+    User -->|"1. Upload PDF"| POST_Index
+    User -->|"2. Submit Query"| POST_Query
+    User -->|"3. Poll Job Status"| GET_Poll
+
+    POST_Index -->|"Save to disk"| UploadDir
+    POST_Index -->|"Enqueue Indexing Job"| IndexingQueue
+    POST_Query -->|"Enqueue Query Job"| QueryQueue
+    GET_Poll -->|"Check Job State / Result"| QueryQueue
+
+    IndexingQueue -->|"Pop Job"| IndexingWorker
+    QueryQueue -->|"Pop Job"| QueryWorker
+
+    IndexingWorker -->|"Invoke indexPdf()"| IndexerEngine
+    QueryWorker -->|"Invoke answerQuery()"| RetrieverEngine
+
+    IndexerEngine -->|"Read PDF File"| UploadDir
+    IndexerEngine -->|"Batch Embed Chunks"| OpenAI_API
+    IndexerEngine -->|"Upsert Vectors & Payload"| QdrantDB
+
+    RetrieverEngine -->|"Query Expansion & HyDE"| OpenAI_API
+    RetrieverEngine -->|"Vector Search Query"| QdrantDB
+    RetrieverEngine -->|"Grounded Completion"| OpenAI_API

@@ -1,0 +1,50 @@
+sequenceDiagram
+    autonumber
+    actor Client
+    participant ExpressAPI as Express API Server<br/>(src/index.js)
+    participant RedisQueue as BullMQ / Redis<br/>(src/queue.js)
+    participant Worker as Query Worker<br/>(src/worker.js)
+    participant Retriever as Retriever Module<br/>(src/retriever.js)
+    participant OpenAI as OpenAI API<br/>(Embeddings & Chat)
+    participant Qdrant as Qdrant DB<br/>(Vector Storage)
+
+    Client->>ExpressAPI: POST /query { "query": "..." }
+    ExpressAPI->>RedisQueue: enqueueQueryJob({ query })
+    RedisQueue-->>ExpressAPI: Return Job ID (e.g. "101")
+    ExpressAPI-->>Client: 202 Accepted { jobId: "101", poll: "/query/101" }
+
+    par Polling Cycle
+        Client->>ExpressAPI: GET /query/101
+        ExpressAPI->>RedisQueue: getJob("101").getState()
+        RedisQueue-->>ExpressAPI: "active" / "waiting"
+        ExpressAPI-->>Client: 200 OK { jobId: "101", status: "active" }
+    and Background Processing
+        RedisQueue->>Worker: Dispatch Job 101
+        Worker->>Retriever: answerQuery(query) / retrieveChunks(query)
+        
+        opt Advanced Query Expansion & HyDE
+            Retriever->>OpenAI: chat.completions (Structured Output for Query Rewriting)
+            OpenAI-->>Retriever: { stepBack, rewritten, subQueries }
+            Retriever->>OpenAI: chat.completions (HyDE Hypothetical Document)
+            OpenAI-->>Retriever: Hypothetical passage string
+        end
+
+        Retriever->>OpenAI: embeddings.create (Batch Query Embeddings)
+        OpenAI-->>Retriever: Vector Arrays (1536 dimensions)
+
+        Retriever->>Qdrant: search(collection, { vector, limit: topK })
+        Qdrant-->>Retriever: Ranked Hit Lists
+
+        Retriever->>Retriever: reciprocalRankFusion(rankedLists)
+        
+        Retriever->>OpenAI: chat.completions (System Context + Query)
+        OpenAI-->>Retriever: Final Answer Text
+
+        Retriever-->>Worker: { query, answer, sources }
+        Worker->>RedisQueue: Mark Job 101 Completed & Store Return Value
+    end
+
+    Client->>ExpressAPI: GET /query/101
+    ExpressAPI->>RedisQueue: getJob("101").getState() & returnvalue
+    RedisQueue-->>ExpressAPI: "completed", result payload
+    ExpressAPI-->>Client: 200 OK { jobId: "101", status: "completed", result: { ... } }

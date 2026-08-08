@@ -1,0 +1,47 @@
+flowchart TD
+    classDef startEnd fill:#37474f,stroke:#263238,stroke-width:2px,color:#ffffff;
+    classDef prompt fill:#e8eaf6,stroke:#3f51b5,stroke-width:2px,color:#1a237e;
+    classDef search fill:#e0f2f1,stroke:#00897b,stroke-width:2px,color:#004d40;
+    classDef fusion fill:#fff3e0,stroke:#fb8c00,stroke-width:2px,color:#e65100;
+    classDef llm fill:#f3e5f5,stroke:#8e24aa,stroke-width:2px,color:#4a148c;
+
+    UserQuery(["Input User Query"]):::startEnd
+
+    subgraph PARALLEL_EXPANSION ["Parallel Query Expansion & HyDE Generation"]
+        direction TB
+        QR["queryRewriting():\nCall gpt-4o-mini with JSON Schema:\n1. stepBack query\n2. rewritten query\n3. 3 subQueries"]:::prompt
+        HyDE["hydeDocument():\nCall gpt-4o-mini:\nGenerate 3-5 sentence hypothetical answer passage"]:::prompt
+    end
+
+    CompileVariants["Compile Search Variants Array:\n- rewritten\n- stepBack\n- hyde\n- subQuery1, subQuery2, subQuery3"]:::fusion
+    BatchEmbedVariants["embedTexts():\nBatch embed all variant strings in single OpenAI call"]:::llm
+
+    subgraph VECTOR_SEARCH ["Parallel Vector Search in Qdrant"]
+        direction TB
+        S1["Search Vector 1 (rewritten)"]:::search
+        S2["Search Vector 2 (stepBack)"]:::search
+        S3["Search Vector 3 (hyde)"]:::search
+        S4["Search Vector 4..N (subQueries)"]:::search
+    end
+
+    RRF["reciprocalRankFusion():\nCompute RRF Score for each candidate:\nRRF_Score(doc) = Σ (1 / (k + rank))\nwhere k = 60"]:::fusion
+    TopKFilter["Select Top finalK Chunks (default: 5)"]:::fusion
+
+    subgraph ANSWER_GEN ["Grounded Answer Generation"]
+        BuildContext["Build Context Window:\nFormat retrieved top chunks with sources"]:::prompt
+        LLMComplete["Call gpt-4o-mini:\nSystem Prompt: 'Answer using ONLY provided context'"]:::llm
+    end
+
+    FinalResult(["Return JSON Response:\n{ query, answer, sources }"]):::startEnd
+
+    UserQuery --> QR
+    UserQuery --> HyDE
+    QR --> CompileVariants
+    HyDE --> CompileVariants
+    CompileVariants --> BatchEmbedVariants
+    BatchEmbedVariants --> S1 & S2 & S3 & S4
+    S1 & S2 & S3 & S4 --> RRF
+    RRF --> TopKFilter
+    TopKFilter --> BuildContext
+    BuildContext --> LLMComplete
+    LLMComplete --> FinalResult
